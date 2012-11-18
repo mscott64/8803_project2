@@ -13,7 +13,7 @@
 #include <unistd.h>
 
 char *hostname = DEFAULT_MACHINE;
-int port_num = DEFAULT_PORT_NUM;
+int port_num = DEFAULT_PROXY_ADDR;
 int num_requests = DEFAULT_REQUESTS;
 int num_threads = NUM_THREADS_CLIENT;
 int num_files = DEFAULT_NUM_FILES;
@@ -135,7 +135,6 @@ void *load(void *data)
   char strHostName[HOST_NAME_SIZE];
   int nHostPort;
   char request[HOST_NAME_SIZE];
-  char output[BUFFER_SIZE];
   
   strcpy(strHostName, hostname);
   nHostPort = port_num;
@@ -168,11 +167,14 @@ void *load(void *data)
     sprintf(request, "%s%d.html", GET, file_num);
     time_t start_time = time(NULL);
     write(hSocket, request, strlen(request));
+    char output[BUFFER_SIZE];
     int bytes_read = read(hSocket, output, BUFFER_SIZE);
+    int tot = bytes_read;
     while(bytes_read > 0)
     {
       printf("%s\n", output);
       bytes_read = read(hSocket, output, BUFFER_SIZE);
+      tot += bytes_read;
     }
     time_t end_time = time(NULL);
 
@@ -183,7 +185,7 @@ void *load(void *data)
     }
     
     pthread_mutex_lock(&stats_lock);
-    total_bytes += bytes_read;
+    total_bytes += tot;
     total_response_time += difftime(end_time, start_time);
     total_num_requests++;
     pthread_mutex_unlock(&stats_lock);

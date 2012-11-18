@@ -171,7 +171,7 @@ void *worker(void *data)
 	continue;
       }
 
-      int req_port = parse_url(url, &scheme, &hostname, path);
+      parse_url(url, &scheme, &hostname, path);
 
       char *path_ptr = path;
       if(path[0] == '/')

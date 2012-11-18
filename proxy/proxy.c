@@ -25,7 +25,7 @@ void *boss(void *data);
 void *worker(void *data);
 void printUsage(void);
 
-int port_num = DEFAULT_PORT_NUM;
+int port_num = DEFAULT_PROXY_ADDR;
 int num_threads = NUM_THREADS_SERVER;
 
 int main(int argc, char *argv[])
@@ -172,38 +172,63 @@ void *worker(void *data)
       }
 
       int req_port = parse_url(url, &scheme, &hostname, path);
+      if(strcasecmp(scheme, "http") != 0)
+      {
+	send_error(hSocket, NOT_IMPLEMENTED, "Only implemented http");
+	continue;
+      }
 
-      char *path_ptr = path;
-      if(path[0] == '/')
-	path_ptr = &(path[1]);
+      /* Connect to server */
+      int fwdSocket; /* handle to socket */
+      struct hostent *pHostInfo; /* holds info about machine */
+      struct sockaddr_in address; /* Internet socket address struct */
+      long nHostAddress;
+      char strHostName[HOST_NAME_SIZE];
+      int nHostPort;
+      char output[BUFFER_SIZE];
+  
+      strcpy(strHostName, hostname);
+      nHostPort = req_port;
+ 
+      pthread_mutex_lock(&lock);
+      pHostInfo = gethostbyname(strHostName);
+      pthread_mutex_unlock(&lock);
+
+      memcpy(&nHostAddress, pHostInfo->h_addr, pHostInfo->h_length);
       
-      int len = strlen(path_ptr);
-      if(*path_ptr == '/' || strcmp(path_ptr, "..") == 0 || strncmp(path_ptr, "../", 3) == 0 || strstr(path_ptr, "/../") != NULL || strcmp(&(path_ptr[len-3]), "/..") == 0)
+      address.sin_addr.s_addr = nHostAddress;
+      address.sin_port = htons(nHostPort);
+      address.sin_family = AF_INET;
+      
+      fwdSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      if(fwdSocket == SOCKET_ERROR)
       {
-	send_error(hSocket, BAD_REQUEST, "Tried to access a private file");
+	send_error(hSocket, INTERNAL_ERROR, "Unable to create connection");
 	continue;
       }
-      
-      FILE *f = fopen(path_ptr, "r");
-      if(f)
+    
+      if(connect(fwdSocket, (struct sockaddr *)&address, sizeof(address)) == SOCKET_ERROR)
       {
-	while(fgets(pBuffer, BUFFER_SIZE, f) != NULL)
-	{
-	  write(hSocket, pBuffer, strlen(pBuffer));
-	}
-      }
-      else
-      {
-	send_error(hSocket, NOT_FOUND, "Unable to locate file");
+	send_error(hSocket, INTERNAL_ERROR, "Could not connect to host machine");
 	continue;
-      } 
-     
-      fclose(f);
+      }
+
+      // forward request
+      write(fwdSocket, pBuffer, strlen(pBuffer));
+      
+      // read response
+      int bytesRead = read(fwdSocket, output, BUFFER_SIZE);
+      while(bytesRead > 0)
+      {
+	write(hSocket, output, bytesRead);
+	bytesRead = read(fwdSocket, output, BUFFER_SIZE);
+      }
+
+      if(close(fwdSocket) == SOCKET_ERROR)
+	printf("Could not close fwdSocket\n");
+      
       if(close(hSocket) == SOCKET_ERROR)
-      {
-	printf("Could not close socket\n");
-	continue;
-      }
+	printf("Could not close hSocket\n");
     }
   return NULL;
 }
