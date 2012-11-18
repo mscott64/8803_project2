@@ -169,6 +169,11 @@ void *load(void *data)
     time_t start_time = time(NULL);
     write(hSocket, request, strlen(request));
     int bytes_read = read(hSocket, output, BUFFER_SIZE);
+    while(bytes_read > 0)
+    {
+      printf("%s\n", output);
+      bytes_read = read(hSocket, output, BUFFER_SIZE);
+    }
     time_t end_time = time(NULL);
 
     if(close(hSocket) == SOCKET_ERROR)

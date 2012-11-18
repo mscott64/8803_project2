@@ -142,6 +142,9 @@ void *worker(void *data)
   char pBuffer[BUFFER_SIZE];
   char method[BUFFER_SIZE];
   char path[BUFFER_SIZE];
+  char *scheme;
+  char url[BUFFER_SIZE];
+  char *hostname;
   while(1)
     {
       pthread_mutex_lock(&lock);
@@ -156,7 +159,7 @@ void *worker(void *data)
       /* Process information */ 
       read(hSocket, pBuffer, BUFFER_SIZE);
       
-      if(sscanf(pBuffer, "%[^ ] %[^ ]", method, path) < 2)
+      if(sscanf(pBuffer, "%[^ ] %[^ ]", method, url) < 2)
       {
 	send_error(hSocket, BAD_REQUEST, "Not the accepted protocol");
 	continue;
@@ -167,6 +170,8 @@ void *worker(void *data)
 	send_error(hSocket, NOT_IMPLEMENTED, "Only implemented GET");
 	continue;
       }
+
+      int req_port = parse_url(url, &scheme, &hostname, path);
 
       char *path_ptr = path;
       if(path[0] == '/')
@@ -182,8 +187,10 @@ void *worker(void *data)
       FILE *f = fopen(path_ptr, "r");
       if(f)
       {
-	fgets(pBuffer, BUFFER_SIZE, f);
-	write(hSocket, pBuffer, strlen(pBuffer));
+	while(fgets(pBuffer, BUFFER_SIZE, f) != NULL)
+	{
+	  write(hSocket, pBuffer, strlen(pBuffer));
+	}
       }
       else
       {
