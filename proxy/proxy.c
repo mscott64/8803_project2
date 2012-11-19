@@ -1,3 +1,4 @@
+#include <arpa/inet.h>
 #include <assert.h>
 #include <constants.h>
 #include <netdb.h>
@@ -7,9 +8,13 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#define SVSHM_MODE SHM_R | SHM_W | (SHM_R>>3) | (SHM_W>>3) | (SHM_R>>6) | (SHM_W>>6)
 
 int queue[Q_SIZE];
 int num = 0;
@@ -27,12 +32,24 @@ void printUsage(void);
 
 int port_num = DEFAULT_PROXY_ADDR;
 int num_threads = NUM_THREADS_SERVER;
+int local_port = DEFAULT_PORT_NUM;
+int shared_mem = 0;
+
+pthread_mutex_t shmem_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t shmem_full = PTHREAD_COND_INITIALIZER;
+int shmem_segs[NUM_SHMEM_SEGS];
+int shmem_num = 0;
+int shmem_curr = 0;
+/* Each shared memory segment has the following */
+// pthread_mutex_t lock
+// int write_done
+// int length
 
 int main(int argc, char *argv[])
 {
   int c;
   opterr = 0;
-  while((c = getopt(argc, argv, "p:t:")) != -1)
+  while((c = getopt(argc, argv, "mp:t:s:")) != -1)
   {
     switch(c)
     {
@@ -41,6 +58,12 @@ int main(int argc, char *argv[])
       break;
     case't':
       num_threads = atoi(optarg);
+      break;
+    case 's':
+      local_port = atoi(optarg);
+      break;
+    case 'm':
+      shared_mem = 1;
       break;
     case '?':
       if(optopt == 'p' || optopt == 't')
@@ -62,6 +85,10 @@ int main(int argc, char *argv[])
     printf("Invalid number of threads\n");
     return 0;
   }
+  int i;
+  if(shared_mem)
+    for(i = 0; i < NUM_SHMEM_SEGS; i++)
+      shmem_segs[i] = -1;
   
   server_create();
   return 0;
@@ -139,14 +166,14 @@ void *boss(void *data)
 void *worker(void *data)
 {
   int hSocket;
-  char pBuffer[BUFFER_SIZE];
-  char method[BUFFER_SIZE];
-  char path[BUFFER_SIZE];
-  char *scheme;
-  char url[BUFFER_SIZE];
-  char *hostname;
   while(1)
     {
+      char pBuffer[BUFFER_SIZE];
+      char method[BUFFER_SIZE];
+      char path[BUFFER_SIZE];
+      char *scheme;
+      char url[BUFFER_SIZE];
+      char *hostname;
       pthread_mutex_lock(&lock);
       while(num == 0)
 	pthread_cond_wait(&empty, &lock);
@@ -195,7 +222,12 @@ void *worker(void *data)
       pthread_mutex_unlock(&lock);
 
       memcpy(&nHostAddress, pHostInfo->h_addr, pHostInfo->h_length);
-      
+
+      // local web server or not
+      int local_ip;
+      inet_pton(AF_INET, LOCAL_IP_ADDR, &local_ip);
+      int is_local = local_ip == nHostAddress && req_port == local_port;
+  
       address.sin_addr.s_addr = nHostAddress;
       address.sin_port = htons(nHostPort);
       address.sin_family = AF_INET;
@@ -213,15 +245,115 @@ void *worker(void *data)
 	continue;
       }
 
-      // forward request
-      write(fwdSocket, pBuffer, strlen(pBuffer));
-      
-      // read response
-      int bytesRead = read(fwdSocket, output, BUFFER_SIZE);
-      while(bytesRead > 0)
+      if(is_local && shared_mem)
       {
-	write(hSocket, output, bytesRead);
-	bytesRead = read(fwdSocket, output, BUFFER_SIZE);
+	key_t key;
+	int loc;
+	
+	/* Find unused memory segments */
+	pthread_mutex_lock(&shmem_lock);
+	while(shmem_num == NUM_SHMEM_SEGS)
+	  pthread_cond_wait(&shmem_full, &shmem_lock);
+	
+	while(1)
+	{
+	  if(shmem_segs[shmem_curr] < 1)
+	  {
+	    loc = shmem_curr;
+	    shmem_num++;
+	    shmem_curr = (shmem_curr + 1) % NUM_SHMEM_SEGS;
+	    break;
+	  }
+	  shmem_curr = (shmem_curr + 1) % NUM_SHMEM_SEGS;
+	}
+	pthread_mutex_unlock(&shmem_lock);
+
+	key = ftok(SHMEM_PATH, loc);
+	if(key < 0)
+	{
+	  send_error(hSocket, INTERNAL_ERROR, "Invalid shared memory key");
+	  pthread_mutex_lock(&shmem_lock);
+	  shmem_segs[loc] = 0;
+	  shmem_num--;
+	  pthread_mutex_unlock(&shmem_lock);
+	  continue;
+	}
+	
+	int id = shmget(key, BUFFER_SIZE, SVSHM_MODE | IPC_CREAT);
+	if(id < 0)
+	{
+	  send_error(hSocket, INTERNAL_ERROR, "Invalid shared memory id");
+	  pthread_mutex_lock(&shmem_lock);
+	  shmem_segs[loc] = 0;
+	  shmem_num--;
+	  pthread_mutex_unlock(&shmem_lock);
+	  continue;
+	}
+
+	void *shmem = shmat(id, NULL, 0);
+	char *shmem_ptr = (char *)shmem;
+
+	pthread_mutex_t lock_mem = PTHREAD_MUTEX_INITIALIZER;
+	int done_writing = 0;
+	int length = 0;
+
+	pthread_mutex_t *mem_lock;
+	int *write_done;
+	int *write_length;
+	
+	/* Set metadata in shared memory */
+	memcpy(shmem_ptr, &lock_mem, sizeof(pthread_mutex_t));
+	mem_lock = (pthread_mutex_t *)shmem_ptr;
+	shmem_ptr = shmem_ptr + sizeof(pthread_mutex_t);
+	
+	memcpy(shmem_ptr, &done_writing, sizeof(int));
+	write_done = (int *)shmem_ptr;
+	shmem_ptr = shmem_ptr + sizeof(int);
+	
+	memcpy(shmem_ptr, &length, sizeof(int));
+	write_length = (int *)shmem_ptr;
+	shmem_ptr = shmem_ptr + sizeof(int);
+
+	/* Write local GET request */
+	sprintf(url, "%s://%s:%d/%s", scheme, hostname, req_port, path);
+	sprintf(pBuffer, "%s %s %d", LOCAL_GET, url, key);
+	write(fwdSocket, pBuffer, strlen(pBuffer));
+
+	/* Read outcome status from socket */
+	int read_bytes = read(fwdSocket, output, BUFFER_SIZE);
+	
+	if(strcmp(output, SUCCESS) != 0) {
+	  // forward error response
+	  write(hSocket, output, read_bytes);
+	} else {
+	  // copy file from memory
+	  pthread_mutex_lock(mem_lock);
+	  if(*write_done == 1)
+	    memcpy(output, shmem_ptr, *write_length);
+	  pthread_mutex_unlock(mem_lock);
+	  write(hSocket, output, *write_length);
+	}
+	
+	/* Make memory segment available */
+	pthread_mutex_lock(&shmem_lock);
+	shmem_num--;
+	shmem_segs[loc] = 0;
+	pthread_mutex_unlock(&shmem_lock);
+
+	shmdt(shmem);
+      }
+      else
+      {
+	// forward request
+	write(fwdSocket, pBuffer, strlen(pBuffer));
+	
+	// read response
+	int bytesRead = read(fwdSocket, output, BUFFER_SIZE);
+	while(bytesRead > 0)
+	{
+	  write(hSocket, output, bytesRead);
+	  bytesRead = read(fwdSocket, output, BUFFER_SIZE);
+	}
       }
 
       if(close(fwdSocket) == SOCKET_ERROR)

@@ -8,7 +8,7 @@ void send_error(int hSocket, char *error_msg, char *descrip)
 {
   int len = strlen(error_msg) + strlen(descrip);
   char pBuffer[len + 1];
-  sprintf(pBuffer, "%s %s", error_msg, descrip);
+  sprintf(pBuffer, "%s%s", error_msg, descrip);
   write(hSocket, pBuffer, len + 1);
   
   if(close(hSocket) == -1)

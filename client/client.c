@@ -172,7 +172,7 @@ void *load(void *data)
     int tot = bytes_read;
     while(bytes_read > 0)
     {
-      printf("%s\n", output);
+      //printf("%s\n", output);
       bytes_read = read(hSocket, output, BUFFER_SIZE);
       tot += bytes_read;
     }

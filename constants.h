@@ -5,7 +5,7 @@
 #define DEFAULT_PROXY_ADDR 5678
 #define DEFAULT_MACHINE "michelle-VirtualBox"
 #define DEFAULT_REQUESTS 500
-#define DEFAULT_NUM_FILES 1
+#define DEFAULT_NUM_FILES 100
 #define GET "GET http://michelle-VirtualBox:1234/files/file"
 #define NUM_THREADS_CLIENT 5
 #define NUM_THREADS_SERVER 10
@@ -17,5 +17,10 @@
 #define INTERNAL_ERROR "500 Internal Error "
 #define NOT_IMPLEMENTED "501 Method not implemented "
 #define HOST_NAME_SIZE 1000
+#define LOCAL_IP_ADDR "127.0.1.1"
+#define LOCAL_GET "LOCAL_GET"
+#define SUCCESS "Successful write"
+#define NUM_SHMEM_SEGS 5
+#define SHMEM_PATH ".."
 
 #endif /* CONSTANTS_H */

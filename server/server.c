@@ -7,9 +7,13 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#define SVSHM_MODE SHM_R | SHM_W | (SHM_R>>3) | (SHM_W>>3) | (SHM_R>>6) | (SHM_W>>6)
 
 int queue[Q_SIZE];
 int num = 0;
@@ -139,14 +143,14 @@ void *boss(void *data)
 void *worker(void *data)
 {
   int hSocket;
-  char pBuffer[BUFFER_SIZE];
-  char method[BUFFER_SIZE];
-  char path[BUFFER_SIZE];
-  char *scheme;
-  char url[BUFFER_SIZE];
-  char *hostname;
   while(1)
     {
+      char pBuffer[BUFFER_SIZE];
+      char method[BUFFER_SIZE];
+      char path[BUFFER_SIZE];
+      char *scheme;
+      char url[BUFFER_SIZE];
+      char *hostname;
       pthread_mutex_lock(&lock);
       while(num == 0)
 	pthread_cond_wait(&empty, &lock);
@@ -165,13 +169,51 @@ void *worker(void *data)
 	continue;
       }
       
-      if(strcasecmp(method, "get") != 0)
+      int is_local = strcasecmp(method, "local_get") == 0;
+      
+      if(strcasecmp(method, "get") != 0 && !is_local)
       {
 	send_error(hSocket, NOT_IMPLEMENTED, "Only implemented GET");
 	continue;
       }
 
       parse_url(url, &scheme, &hostname, path);
+      
+      void *shmem;
+      void *shmem_ptr;
+      pthread_mutex_t *mem_lock;
+      int *write_done;
+      int *write_length;
+      
+      if(is_local) 
+      { /* Get shared memory segment */
+	key_t key;
+	if(sscanf(pBuffer, "%*[^ ] %*[^ ] %d", &key) < 1)
+	{
+	  send_error(hSocket, BAD_REQUEST, "Not the accepted LOCAL_GET protocol");
+	  continue;
+	}
+	
+	
+	int id = shmget(key, 0, SVSHM_MODE);
+	if(id < 0)
+	{
+	  send_error(hSocket, INTERNAL_ERROR, "Invalid id for shared memory");
+	  continue;
+	}
+	
+	shmem = shmat(id, NULL, 0);
+	shmem_ptr = (char *)shmem;
+
+	mem_lock = (pthread_mutex_t *)shmem_ptr;
+	shmem_ptr = shmem_ptr + sizeof(pthread_mutex_t);
+
+	write_done = (int *)shmem_ptr;
+	shmem_ptr = shmem_ptr + sizeof(int);
+
+	write_length = (int *)shmem_ptr;
+	shmem_ptr = shmem_ptr + sizeof(int);
+      }
 
       char *path_ptr = path;
       if(path[0] == '/')
@@ -185,10 +227,25 @@ void *worker(void *data)
       }
       
       FILE *f = fopen(path_ptr, "r");
+      int total_length = 0;
       if(f)
       {
 	while(fgets(pBuffer, BUFFER_SIZE, f) != NULL)
 	{
+	  if(is_local) {
+	    memcpy(shmem_ptr, pBuffer, strlen(pBuffer));
+	    shmem_ptr = shmem_ptr + strlen(pBuffer);
+	    total_length += strlen(pBuffer);
+	  } else {
+	    write(hSocket, pBuffer, strlen(pBuffer));
+	  }
+	}
+	if(is_local) { // Send write completion success
+	  pthread_mutex_lock(mem_lock);
+	  *write_done = 1;
+	  *write_length = total_length;
+	  pthread_mutex_unlock(mem_lock);
+	  sprintf(pBuffer, "%s", SUCCESS);
 	  write(hSocket, pBuffer, strlen(pBuffer));
 	}
       }
