@@ -5,6 +5,7 @@
 #include <netinet/in.h>
 #include <pthread.h>
 #include <proxy.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -29,6 +30,7 @@ pthread_mutex_t reqs_lock = PTHREAD_MUTEX_INITIALIZER;
 void *boss(void *data);
 void *worker(void *data);
 void printUsage(void);
+void delete_shared_mem(int);
 
 int port_num = DEFAULT_PROXY_ADDR;
 int num_threads = NUM_THREADS_SERVER;
@@ -120,6 +122,13 @@ void server_create(void)
 
 void *boss(void *data)
 {
+  /* Add signal handler for shared memory deletion */
+  struct sigaction delete;
+  delete.sa_handler = delete_shared_mem;
+  sigemptyset(&delete.sa_mask);
+  delete.sa_flags = 0;
+  sigaction(SIGQUIT, &delete, NULL);
+
   int hSocket, hServerSocket; /* handle to socket */
   struct sockaddr_in address; /* Internet socket address struct */
   int nAddressSize = sizeof(struct sockaddr_in);
@@ -363,4 +372,18 @@ void *worker(void *data)
 	printf("Could not close hSocket\n");
     }
   return NULL;
+}
+
+void delete_shared_mem(int signum)
+{
+  int i;
+  if(shared_mem)
+  {
+    printf("Delete shared memory\n");
+    for(i = 0; i < NUM_SHMEM_SEGS; i++)
+    {
+      int id = shmget(ftok(SHMEM_PATH, i), 0, 0);
+      shmctl(id, IPC_RMID, NULL);
+    }
+  }
 }
