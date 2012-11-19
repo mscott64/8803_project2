@@ -258,6 +258,7 @@ void *worker(void *data)
       {
 	key_t key;
 	int loc;
+	int prev;
 	
 	/* Find unused memory segments */
 	pthread_mutex_lock(&shmem_lock);
@@ -269,6 +270,7 @@ void *worker(void *data)
 	  if(shmem_segs[shmem_curr] < 1)
 	  {
 	    loc = shmem_curr;
+	    prev = shmem_segs[shmem_curr];
 	    shmem_num++;
 	    shmem_curr = (shmem_curr + 1) % NUM_SHMEM_SEGS;
 	    break;
@@ -302,26 +304,37 @@ void *worker(void *data)
 	void *shmem = shmat(id, NULL, 0);
 	char *shmem_ptr = (char *)shmem;
 
-	pthread_mutex_t lock_mem = PTHREAD_MUTEX_INITIALIZER;
-	int done_writing = 0;
-	int length = 0;
-
 	pthread_mutex_t *mem_lock;
 	int *write_done;
 	int *write_length;
 	
-	/* Set metadata in shared memory */
-	memcpy(shmem_ptr, &lock_mem, sizeof(pthread_mutex_t));
-	mem_lock = (pthread_mutex_t *)shmem_ptr;
-	shmem_ptr = shmem_ptr + sizeof(pthread_mutex_t);
-	
-	memcpy(shmem_ptr, &done_writing, sizeof(int));
-	write_done = (int *)shmem_ptr;
-	shmem_ptr = shmem_ptr + sizeof(int);
-	
-	memcpy(shmem_ptr, &length, sizeof(int));
-	write_length = (int *)shmem_ptr;
-	shmem_ptr = shmem_ptr + sizeof(int);
+	if(prev < 0)
+	{ /* Set metadata in shared memory */
+	  pthread_mutex_t lock_mem = PTHREAD_MUTEX_INITIALIZER;
+	  int done_writing = 0;
+	  int length = 0;
+	  
+	  memcpy(shmem_ptr, &lock_mem, sizeof(pthread_mutex_t));
+	  mem_lock = (pthread_mutex_t *)shmem_ptr;
+	  shmem_ptr = shmem_ptr + sizeof(pthread_mutex_t);
+	  
+	  memcpy(shmem_ptr, &done_writing, sizeof(int));
+	  write_done = (int *)shmem_ptr;
+	  shmem_ptr = shmem_ptr + sizeof(int);
+	  
+	  memcpy(shmem_ptr, &length, sizeof(int));
+	  write_length = (int *)shmem_ptr;
+	  shmem_ptr = shmem_ptr + sizeof(int);
+	} else { /* Otherwise just set the pointers */
+	  mem_lock = (pthread_mutex_t *)shmem_ptr;
+	  shmem_ptr = shmem_ptr + sizeof(pthread_mutex_t);
+
+	  write_done = (int *)shmem_ptr;
+	  shmem_ptr = shmem_ptr + sizeof(int);
+	  
+	  write_length = (int *)shmem_ptr;
+	  shmem_ptr = shmem_ptr + sizeof(int);
+	}
 
 	/* Write local GET request */
 	sprintf(url, "%s://%s:%d/%s", scheme, hostname, req_port, path);
@@ -348,6 +361,7 @@ void *worker(void *data)
 	shmem_num--;
 	shmem_segs[loc] = 0;
 	pthread_mutex_unlock(&shmem_lock);
+	pthread_cond_signal(&shmem_full);
 
 	shmdt(shmem);
       }
